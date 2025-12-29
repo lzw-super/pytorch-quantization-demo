@@ -59,10 +59,10 @@ if __name__ == "__main__":
 
     train_loader = torch.utils.data.DataLoader(
         datasets.MNIST('data', train=True, download=True, 
-                       transform=transforms.Compose([
+                    transform=transforms.Compose([
                             transforms.ToTensor(),
                             transforms.Normalize((0.1307,), (0.3081,))
-                       ])),
+                    ])),
         batch_size=batch_size, shuffle=True, num_workers=1, pin_memory=True
     )
 
@@ -89,6 +89,6 @@ if __name__ == "__main__":
         if not osp.exists('ckpt'):
             os.makedirs('ckpt')
         if using_bn:
-            torch.save(model.state_dict(), 'ckpt/mnist_cnnbn.pt')
+            torch.save(model.state_dict(), 'reference\pytorch-quantization-demo\ckpt\mnist_cnnbn.pt')
         else:
-            torch.save(model.state_dict(), 'ckpt/mnist_cnn.pt')
+            torch.save(model.state_dict(), 'reference\pytorch-quantization-demo\ckpt\mnist_cnn.pt')

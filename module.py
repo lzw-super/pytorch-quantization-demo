@@ -33,12 +33,12 @@ def quantize_tensor(x, scale, zero_point, num_bits=8, signed=False):
     else:
         qmin = 0.
         qmax = 2. ** num_bits - 1.
- 
+
     q_x = zero_point + x / scale
     q_x.clamp_(qmin, qmax).round_()
     
     return q_x
- 
+
 def dequantize_tensor(q_x, scale, zero_point):
     return scale * (q_x - zero_point)
 
@@ -62,7 +62,7 @@ def search(M):
 
 
 class QParam(nn.Module):
-
+    '''类的主要作用是计算并更新输入输出以及权重的scale、zero_point、min、max，并以此来将输入的浮点数计算得出量化后的数并输出'''
     def __init__(self, num_bits=8):
         super(QParam, self).__init__()
         self.num_bits = num_bits
@@ -73,7 +73,8 @@ class QParam(nn.Module):
         self.register_buffer('scale', scale)
         self.register_buffer('zero_point', zero_point)
         self.register_buffer('min', min)
-        self.register_buffer('max', max)
+        self.register_buffer('max', max) 
+        '''注册成buffer的变量会出现在state_dict当中,且会移动到对于设备上'''
 
     def update(self, tensor):
         if self.max.nelement() == 0 or self.max.data < tensor.max().data:
@@ -110,7 +111,8 @@ class QParam(nn.Module):
 
 class QModule(nn.Module):
 
-    def __init__(self, qi=True, qo=True, num_bits=8):
+    def __init__(self, qi=True, qo=True, num_bits=8): 
+        '''查看模块是否需要量化/伪量化输入、输出   '''
         super(QModule, self).__init__()
         if qi:
             self.qi = QParam(num_bits=num_bits)
@@ -155,7 +157,7 @@ class QConv2d(QModule):
         self.conv_module.weight.data = self.conv_module.weight.data - self.qw.zero_point
 
         self.conv_module.bias.data = quantize_tensor(self.conv_module.bias.data, scale=self.qi.scale * self.qw.scale,
-                                                     zero_point=0, num_bits=32, signed=True)
+                                                    zero_point=0, num_bits=32, signed=True)
 
     def forward(self, x):
         if hasattr(self, 'qi'):
@@ -165,9 +167,9 @@ class QConv2d(QModule):
         self.qw.update(self.conv_module.weight.data)
 
         x = F.conv2d(x, FakeQuantize.apply(self.conv_module.weight, self.qw), self.conv_module.bias, 
-                     stride=self.conv_module.stride,
-                     padding=self.conv_module.padding, dilation=self.conv_module.dilation, 
-                     groups=self.conv_module.groups)
+                    stride=self.conv_module.stride,
+                    padding=self.conv_module.padding, dilation=self.conv_module.dilation, 
+                    groups=self.conv_module.groups)
 
         if hasattr(self, 'qo'):
             self.qo.update(x)
@@ -215,7 +217,7 @@ class QLinear(QModule):
         self.fc_module.weight.data = self.qw.quantize_tensor(self.fc_module.weight.data)
         self.fc_module.weight.data = self.fc_module.weight.data - self.qw.zero_point
         self.fc_module.bias.data = quantize_tensor(self.fc_module.bias.data, scale=self.qi.scale * self.qw.scale,
-                                                   zero_point=0, num_bits=32, signed=True)
+                                                zero_point=0, num_bits=32, signed=True)
 
     def forward(self, x):
         if hasattr(self, 'qi'):
@@ -272,7 +274,7 @@ class QReLU(QModule):
         return x
 
 class QMaxPooling2d(QModule):
-
+    '''不freeze就不会生成qi ，因为maxpooling层没有可训练的参数'''
     def __init__(self, kernel_size=3, stride=1, padding=0, qi=False, num_bits=None):
         super(QMaxPooling2d, self).__init__(qi=qi, num_bits=num_bits)
         self.kernel_size = kernel_size
@@ -308,33 +310,75 @@ class QConvBNReLU(QModule):
         self.conv_module = conv_module
         self.bn_module = bn_module
         self.qw = QParam(num_bits=num_bits)
-        self.qb = QParam(num_bits=32)
+        self.qb = QParam(num_bits=32)   #权重用32为int来表示
         self.register_buffer('M', torch.tensor([], requires_grad=False))  # 将M注册为buffer
 
     def fold_bn(self, mean, std):
+        """
+        将 BatchNorm 层融合到卷积层中，返回融合后的新 weight 和 bias 只能在eval的模式下融合，否则没有mean和std返回（BN的注册变量）。
+        
+        参数:
+            mean (Tensor): BN 的 running_mean，shape 为 [C]，C 是通道数
+            std  (Tensor): BN 的 sqrt(running_var + eps)，shape 为 [C]
+        
+        返回:
+            weight (Tensor): 融合后的新卷积权重，shape 与原 conv.weight 相同
+            bias   (Tensor): 融合后的新卷积偏置，shape 为 [C]
+        """
+        
+        # 检查 BN 是否启用了可学习的仿射变换（即是否有 gamma 和 beta）
         if self.bn_module.affine:
-            gamma_ = self.bn_module.weight / std
-            weight = self.conv_module.weight * gamma_.view(self.conv_module.out_channels, 1, 1, 1)
+            # ===== 情况1: BN 有可学习参数（affine=True）=====
+            
+            # 计算等效缩放因子 gamma_ = gamma / std
+            # 因为 BN 中先除以 std，再乘以 gamma，所以合并为 gamma / std
+            gamma_ = self.bn_module.weight / std  # shape: [C]
+
+            # 将 gamma_ 扩展为 [C, 1, 1, 1]，以便与 conv.weight [C, C_in, K, K] 逐通道相乘
+            # 这样每个输出通道的整个卷积核都被缩放
+            weight = self.conv_module.weight * gamma_.view(
+                self.conv_module.out_channels, 1, 1, 1
+            )  # shape 不变
+
+            # 处理偏置项
             if self.conv_module.bias is not None:
+                # 原 conv 有 bias: b_conv
+                # BN 变换: gamma * ( (W*x + b_conv) - mean ) / std + beta
+                #         = (gamma/std) * W * x + (gamma/std)*(b_conv - mean) + beta
+                # 所以新 bias = gamma_ * (b_conv - mean) + beta
                 bias = gamma_ * self.conv_module.bias - gamma_ * mean + self.bn_module.bias
             else:
+                # 原 conv 无 bias，则视为 b_conv = 0
+                # 新 bias = -gamma_ * mean + beta
                 bias = self.bn_module.bias - gamma_ * mean
+
         else:
-            gamma_ = 1 / std
+            # ===== 情况2: BN 无仿射参数（affine=False），即 gamma=1, beta=0 =====
+            
+            # 此时 BN 只做标准化：(x - mean) / std
+            # 所以等效缩放因子 gamma_ = 1 / std
+            gamma_ = 1 / std  # shape: [C]
+
+            # 同样逐通道缩放卷积核
             weight = self.conv_module.weight * gamma_
+
+            # 处理偏置
             if self.conv_module.bias is not None:
+                # 新 bias = (1/std) * (b_conv - mean)
                 bias = gamma_ * self.conv_module.bias - gamma_ * mean
             else:
+                # 新 bias = - (1/std) * mean
                 bias = -gamma_ * mean
-            
+
         return weight, bias
 
 
-    def forward(self, x):
+    def forward(self, x): 
+        '''伪量化的前向传播，输入权重以及输出全进行伪量化（先量化后反量化）'''
 
         if hasattr(self, 'qi'):
             self.qi.update(x)
-            x = FakeQuantize.apply(x, self.qi)
+            x = FakeQuantize.apply(x, self.qi)  # 前向传播时进行伪量化
 
         if self.training:
             y = F.conv2d(x, self.conv_module.weight, self.conv_module.bias, 
@@ -401,13 +445,13 @@ class QConvBNReLU(QModule):
         self.conv_module.weight.data = self.conv_module.weight.data - self.qw.zero_point
 
         self.conv_module.bias.data = quantize_tensor(bias, scale=self.qi.scale * self.qw.scale,
-                                                     zero_point=0, num_bits=32, signed=True)
+                                                    zero_point=0, num_bits=32, signed=True)
 
     def quantize_inference(self, x):
         x = x - self.qi.zero_point
         x = self.conv_module(x)
         x = self.M * x
-        x.round_() 
+        x.round_()   # 加大量化损失（用于测试）
         x = x + self.qo.zero_point        
         x.clamp_(0., 2.**self.num_bits-1.).round_()
         return x

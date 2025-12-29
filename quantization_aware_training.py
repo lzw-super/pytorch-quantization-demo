@@ -60,11 +60,11 @@ if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     train_loader = torch.utils.data.DataLoader(
-        datasets.MNIST('data', train=True, download=True, 
-                       transform=transforms.Compose([
+        datasets.MNIST('data', train=True, download=False, 
+                    transform=transforms.Compose([
                             transforms.ToTensor(),
                             transforms.Normalize((0.1307,), (0.3081,))
-                       ])),
+                    ])),
         batch_size=batch_size, shuffle=True, num_workers=1, pin_memory=False
     )
 
@@ -78,11 +78,11 @@ if __name__ == "__main__":
 
     if using_bn:
         model = NetBN()
-        model.load_state_dict(torch.load('ckpt/mnist_cnnbn.pt', map_location='cpu'))
+        model.load_state_dict(torch.load('reference/pytorch-quantization-demo/ckpt/mnist_cnnbn.pt', map_location='cpu'))
         save_file = "ckpt/mnist_cnnbn_qat.pt"
     else:
         model = Net()
-        model.load_state_dict(torch.load('ckpt/mnist_cnn.pt', map_location='cpu'))
+        model.load_state_dict(torch.load('reference/pytorch-quantization-demo/ckpt/mnist_cnn.pt', map_location='cpu'))
         save_file = "ckpt/mnist_cnn_qat.pt"
     model.to(device)
 
@@ -90,7 +90,7 @@ if __name__ == "__main__":
 
     model.eval()
     
-    full_inference(model, test_loader)
+    full_inference(model, test_loader)   #检测样本确定min、max
 
     num_bits = 8
     model.quantize(num_bits=num_bits)

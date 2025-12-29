@@ -95,7 +95,8 @@ class NetBN(nn.Module):
         self.qmaxpool2d_2 = QMaxPooling2d(kernel_size=2, stride=2, padding=0)
         self.qfc = QLinear(self.fc, qi=False, qo=True, num_bits=num_bits)
 
-    def quantize_forward(self, x):
+    def quantize_forward(self, x): 
+        '''伪量化的训练'''
         x = self.qconv1(x)
         x = self.qmaxpool2d_1(x)
         x = self.qconv2(x)
@@ -104,14 +105,16 @@ class NetBN(nn.Module):
         x = self.qfc(x)
         return x
 
-    def freeze(self):
+    def freeze(self): 
+        '''固化 ： 加载量化后的变量到模型中，用于后训练量化推理'''
         self.qconv1.freeze()
         self.qmaxpool2d_1.freeze(self.qconv1.qo)
         self.qconv2.freeze(qi=self.qconv1.qo)
         self.qmaxpool2d_2.freeze(self.qconv2.qo)
         self.qfc.freeze(qi=self.qconv2.qo)
 
-    def quantize_inference(self, x):
+    def quantize_inference(self, x): 
+        '''后训练量化（只在推理时量化）'''
         qx = self.qconv1.qi.quantize_tensor(x)
         qx = self.qconv1.quantize_inference(qx)
         qx = self.qmaxpool2d_1.quantize_inference(qx)

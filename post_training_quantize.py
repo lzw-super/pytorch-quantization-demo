@@ -10,7 +10,8 @@ import os
 import os.path as osp
 
 
-def direct_quantize(model, test_loader):
+def direct_quantize(model, test_loader): 
+    '''输入500个样本，进行伪量化前向传播，配合update函数确定整500个样本的输入输出以及中间权重的minmax、scale、zero_point'''
     for i, (data, target) in enumerate(test_loader, 1):
         output = model.quantize_forward(data)
         if i % 500 == 0:
@@ -43,11 +44,11 @@ if __name__ == "__main__":
     # load_model_file = None
 
     train_loader = torch.utils.data.DataLoader(
-        datasets.MNIST('data', train=True, download=True, 
-                       transform=transforms.Compose([
+        datasets.MNIST('data', train=True, download=False, 
+                    transform=transforms.Compose([
                             transforms.ToTensor(),
                             transforms.Normalize((0.1307,), (0.3081,))
-                       ])),
+                    ])),
         batch_size=batch_size, shuffle=True, num_workers=1, pin_memory=True
     )
 
@@ -61,12 +62,12 @@ if __name__ == "__main__":
 
     if using_bn:
         model = NetBN()
-        model.load_state_dict(torch.load('ckpt/mnist_cnnbn.pt', map_location='cpu'))
-        save_file = "ckpt/mnist_cnnbn_ptq.pt"
+        model.load_state_dict(torch.load('reference\pytorch-quantization-demo\ckpt\mnist_cnnbn.pt', map_location='cpu'))
+        save_file = "reference\pytorch-quantization-demo\ckpt\mnist_cnnbn_ptq.pt"
     else:
         model = Net()
-        model.load_state_dict(torch.load('ckpt/mnist_cnn.pt', map_location='cpu'))
-        save_file = "ckpt/mnist_cnn_ptq.pt"
+        model.load_state_dict(torch.load('reference\pytorch-quantization-demo\ckpt\mnist_cnn.pt', map_location='cpu'))
+        save_file = "reference\pytorch-quantization-demo\ckpt\mnist_cnn_ptq.pt"
 
     model.eval()
     full_inference(model, test_loader)
@@ -85,7 +86,7 @@ if __name__ == "__main__":
     direct_quantize(model, train_loader)
 
     torch.save(model.state_dict(), save_file)
-    model.freeze()
+    model.freeze() # freeze函数是将模型的权重进行量化 然后
 
     # 测试是否设备转移是否正确
     # model.cuda()
